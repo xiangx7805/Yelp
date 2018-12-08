@@ -1,0 +1,628 @@
+---
+title: "Yelp Report"
+author: "Xiang XU"
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, fig.width = 8, fig.height = 8, fig.align  = "centre"  )
+pacman::p_load(knitr,ggplot2,  dplyr, ggraph, stringr, wordcloud, tidytext,tidyr,lubridate, widyr,jsonlite,sentimentr, benford.analysis, magrittr,lme4,arm,nnet,mgcv,data.table,car,haven,SDMTools,tm, wordcloud,corrplot)
+setwd("E:/MSSP/MA678/Midproj_Yelp/")
+```
+
+#Abstract
+
+This exploration analysis is based on the restaurants and user information coming from Yelp Dataset Challenge. The goal is trying to explore the relationship between different categories restaurants star ratings and restaurants features, further build an appropriate model make predictions. This has been done with multinomial model, logistic model. Based on the prediction result, the logistic model looks better. Also, in the exploration process, I also explore the review text from different star ratings and do some sentiment analysis.
+
+#Introduction
+
+So much information in Yelp dataset! Here we mainly try to explore the difficulty in predicting restaurants' stars given these different categories restaurants' feature. And at the same time, we know restaurants' average stars come from customers review star! So we also do some analysis on users' review text and stars.
+
+##A.	Previous Work
+After talking to Angela(TA) and scan her Predict Ratings for Chinese Restaurants using Sentiment Analysis [8], I got some inspirations and decide to extend the study subjects to different categories restaurants. Also, I read some of the past winners’ paper. The papers has been listed in the Reference. 
+
+
+##B.  Data Source & Description
+
+All data came from [Yelp Dataset Challenge Round 12](https://www.yelp.com/dataset/challenge). 
+
+In this paper, we mainly focus on the `review`, `buisness_info` and `user_info` dataset, and filter all the information about restaurants. 
+
+```{r}
+rm(list=ls())
+#read data
+restaurant_info <- get(load( "./Data/restaurant_info.Rdata"))
+review_restaurant <- get( load("./Data/df_review_restaurant.Rdata"))
+user_info <- get(load("./Data/user_rm_outlier_yelpinglevel.Rdata"))
+```
+```{r}
+kable(t(head(restaurant_info,1)), 
+      col.names = c("Example"),
+      caption = "Business info (restuarant)")
+kable(t(head(review_restaurant ,1)), 
+      col.names = c("Example"),
+      caption = "Review (restuarant)")
+
+kable(t(head(  user_info  ,1)), 
+      col.names = c("Example"),
+      caption = "User info")
+```
+
+
+##C.  Exploratory Data Analysis 
+
+Let's take a glimpse of the distribution of the reviews' and restuarants' stars to start our Yelp analysis.
+
+
+
+```{r}
+
+#display(restaurant_info$stars)
+
+p1 <- ggplot(restaurant_info,aes(x= stars ,y = ..density..))+
+  geom_density(fill="coral", colour=NA, adjust =2.5) + 
+  geom_histogram(binwidth = .5, fill = "cornsilk", size =.2, color = "grey60",alpha =.5)+
+  ggtitle("Restaurants Average Star Distribution")+
+  geom_vline(xintercept =  mean(restaurant_info$stars), linetype = "dashed", color = "ivory4", size= 1 )+ 
+  #Q1 Q3
+  geom_vline(xintercept =  quantile(restaurant_info$stars, probs = c(0.25,0.75)), linetype = "dotted", color = "ivory4", size= 1 ) 
+
+p2 <- ggplot(review_restaurant,aes(x= stars.x ,y = ..density..))+
+  geom_density(fill="tomato", colour=NA, adjust =3) + 
+  geom_histogram(binwidth = 1, fill = "cornsilk", size =.7, color = "grey60",alpha =.5) +
+  ggtitle("Review Star Distribution")+xlab("stars")+
+  #mean
+  geom_vline(xintercept =  mean(review_restaurant$stars.x), linetype = "dashed", color = "ivory4", size= 1 ) + 
+  #Q1 Q3
+  geom_vline(xintercept =  quantile(review_restaurant$stars.x, probs = c(0.25,0.75)), linetype = "dotted", color = "ivory4", size= 1 ) 
+  
+gridExtra::grid.arrange(p1,p2,nrow=2)
+
+```
+
+We are initially surprised to see the difference between distributions between reviews' and restaurants' stars category. The review distributions in the restaurants category were skewed to the 4 and 5 star categories heavily, with the average of 3.7 and median 4 stars, while the resturants average star distributions have less skewness, with the average of 3.4 stars and median of 3.5 stars.
+
+The skewness is confirmed by a separate analysis by Max Woolf$\left [ 7 \right ]$ on 1 and 5 star reviews which showed, excellent visualization aside, that Yelp reviews have started to appear more optimistically biased as time passes. 
+
+The difference between reviews star and restaurants average star will be taken into consideration in our further analytics task.
+
+Out of curiosity, I take a further look at the review text. what kind of words, mainly bigrams, are characteristic of different star categories so I threw in some quick wordcloud visualizations.
+
+![Wordcloud of 1 Star Reviews](image/yelp_star1_review.PNG)
+
+![Wordcloud of 2 Star Reviews](image/yelp_star2_review.PNG)
+
+![Wordcloud of 3 Star Reviews](image/yelp_star3_review.PNG)
+
+![Wordcloud of 4 Star Reviews](image/yelp_star4_review.PNG)
+
+![Wordcloud of 5 Star Reviews](image/yelp_star5_review.PNG)
+
+Lesson learned: if one were to start a successful business, then open a Mexican-Chinese-thai buffet in Sin City with free Wifi, convenient parking, icecream on the menu, and make sure to have loving and friendly staff members!
+
+And just out of curiosity, i use `sentiment` function to calculate the sentiment scores of the review text, and look at its distributions.
+
+```{r}
+review_sentiment_restaurant <- get( load("E:/MSSP/MA678/Midproj_Yelp/Data/review_sentiment_restaurant.Rdata"))
+```
+
+```{r}
+ggplot(review_sentiment_restaurant, aes(x = review_sentiment, y =..density..)) +
+  geom_density(color = "slateblue1",fill ="slateblue1")+
+  ggtitle("Review sentiment Score Distributions")
+```
+
+It seems that there are some extreme values there. Move the outliers and look at it again.
+
+```{r}
+move_outliers <- function(x, na.rm = TRUE, ...) {
+  qnt <- quantile(x, probs=c(.25, .75), na.rm = na.rm, ...)
+  H <- 1.5 * IQR(x, na.rm = na.rm)
+  y <- x
+  y[x < (qnt[1] - H)] <- NA
+  y[x > (qnt[2] + H)] <- NA
+  y
+}
+
+
+review_sentiment_restaurant$review_sentiment_rm <- move_outliers(review_sentiment_restaurant$review_sentiment)
+
+ggplot(review_sentiment_restaurant, aes(x = review_sentiment_rm, y =..density..)) +
+  geom_density(color = "slateblue1",fill ="slateblue1")+
+  geom_histogram(binwidth = 1, fill = "cornsilk", size =.7, color = "grey60",alpha =.5) +
+  #mean
+  geom_vline(xintercept =  mean(review_sentiment_restaurant$review_sentiment_rm, na.rm = TRUE), linetype = "dashed", color = "ivory4", size= 1 ) + 
+  #Q1 Q3
+  geom_vline(xintercept =  quantile(review_sentiment_restaurant$review_sentiment_rm, probs = c(0.25,0.75),na.rm = TRUE), linetype = "dotted", color = "ivory4", size= 1 ) +
+  ggtitle("Review sentiment Score Distributions","After deleting outliers") +
+  xlab("review sentiment score")
+```
+
+
+
+Based on simple analysis if restaurants categories, recategorize them into several main types. Here I have 17 main restuarant categories: "Italian", "French","Vietnamese",  "Chinese", "Mediterranean","Korean", "Greek", "Middle Eastern" ,"Canadian","German","Irish","Indian", "Thai" , "Mexican", "Portuguese","Japanese","American", and their counts.
+
+```{r}
+restaurant_category_count <- read.csv(file = "dataset/restaurant_category_count.csv")
+#kable(head(restaurant_info,10))
+kable(restaurant_category_count, caption = "Main Type Restaurants Counts")
+```
+
+
+How's star distributions of different category restaurants?
+
+```{r,fig.height=16,fig.width=16}
+#sapply(x= restaurant_info$stars, INDEX = as.factor(unique(restaurant_info$categ.temp)), FUN =summary())
+restaurant_summary <- 
+restaurant_info %>% group_by(categ.temp)%>% 
+  transmute(mean = round(mean(stars),3),sd = round(sd(stars),3),
+            Q1 =quantile(stars, probs = .25),
+            Q3 =quantile(stars, probs = .75))%>%
+  unique()%>%
+  arrange(desc(mean))
+kable(restaurant_summary,caption = "stars summary by category")
+
+# restaurant_info <- restaurant_info %>% 
+#   group_by(categ.temp)%>%  mutate(mean = round(mean(stars),3)) %>% ungroup()
+
+ggplot(restaurant_info) +
+  aes(x= stars ,y = ..density.., group = categ.temp )+
+  #geom_histogram(fill = "cornsilk", "color" = "grey60",size =.2) +
+  aes(x=stars, fill = categ.temp,color = categ.temp)+
+  geom_density(alpha =1, adjust =2)+
+  geom_histogram(binwidth = .5, fill = "cornsilk", size =.2, color = "grey60",alpha =.5)+
+  #facet_grid( categ.temp~ ., scales="free_y", space="free_y" ) +
+  # geom_vline(xintercept = mean)+
+  facet_wrap(~categ.temp)+
+  theme(legend.position = "none")
+  
+```
+
+```{r}
+ggplot(restaurant_info,aes(x= factor(categ.temp) ,y = stars, color = categ.temp )) +
+  #+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1),legend.position = "none")
+
+```
+
+There'are not big distinctions among the stars category distribution of differnet category restaurants. But still we can see `German` restaurant has higher skewness than others, which means higher star level here.
+
+We also want to get a sense of how the restaurants' review counts distribute.
+
+```{r}
+ggplot(restaurant_info,aes(x= factor(categ.temp) ,y = review_count, color = categ.temp )) +
+  #+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1),legend.position = "none")
+```
+
+So many outliers!
+
+Try to replace outliers by using "outlier rule" q +/- (1.5 * H), so as to view the distribution of review_count more clearly.
+
+```{r}
+change_outliers <- function(x, na.rm = TRUE, ...) {
+  qnt <- quantile(x, probs=c(.25, .75), na.rm = na.rm, ...)
+  H <- 1.5 * IQR(x, na.rm = na.rm)
+  y <- x
+  y[x < (qnt[1] - H)] <- qnt[1] - H
+  y[x > (qnt[2] + H)] <- qnt[2] + H
+  y
+}
+
+
+restaurant_info$review_count_rmout <- change_outliers(restaurant_info$review_count)
+  
+ggplot(restaurant_info,aes(x= factor(categ.temp) ,y = review_count_rmout, color = categ.temp )) +
+  #+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1),legend.position = "none")
+```
+
+Still some large outliers, but much better now.
+
+Then let's look at the restaurant-price-range distributions.
+
+```{r}
+#summary(restaurant_info$RestaurantsPriceRange2)
+
+ggplot(restaurant_info,aes(x=RestaurantsPriceRange2 ))+
+  geom_histogram(fill="tomato", colour=NA,stat = "count") +
+  ggtitle("Restaurants Price Range Distribution")
+
+ggplot(restaurant_info,aes(x=RestaurantsPriceRange2, fill=categ.temp, colour=categ.temp))+
+  geom_histogram(stat = "count") +
+  facet_wrap( ~ categ.temp) +
+  theme(legend.position = "none")+
+  ggtitle("Restaurants Price Range Distribution","by category")
+
+
+```
+
+Is there relations between price range and stars?
+
+```{r}
+ggplot(restaurant_info,aes(x=RestaurantsPriceRange2, y= stars,color="lightskynlue"))+
+  geom_point(position=position_jitter(width=.3, height=0.2))+
+  #facet_wrap(~categ.temp)+
+  theme(legend.position = "none")
+
+ggplot(restaurant_info,aes(x=RestaurantsPriceRange2, y= stars, color=categ.temp))+
+  geom_point(position=position_jitter(width=.3, height=0.2))+
+  facet_wrap(~categ.temp)+
+  theme(legend.position = "none")
+```
+
+##D.  Model used
+
+During the whole analysis process, I mainly used mutinomial model. 
+
+First I use a five-level categorical model (I have 5 stars response), later switch to logistic model, recatogorizing reponse(stars) to "above average" and "below average".
+
+##E.  Result 
+
+###1.  Categorical model
+```{r}
+#read data
+rm(list=ls())
+restaurant_info <- get(load(( "dataset/restaurant_info.Rdata")))
+#restaurant_category_count <- read.csv(file = "dataset/restaurant_category_count.csv")
+
+# str(restaurant_info)
+# colnames(restaurant_info)
+restaurant_info$categ.temp <- as.factor(restaurant_info$categ.temp)
+restaurant_info$stars_int <- round(restaurant_info$stars-.1,0)
+
+restaurant_info$Parking <- ifelse(str_detect(as.character(restaurant_info$BusinessParking),"True") == TRUE,TRUE, FALSE)
+```
+
+
+
+```{r}
+#summary(restaurant_info$review_count)
+#ggplot(restaurant_info, aes(x= review_count, y = ..density..))+geom_density()
+restaurant_info$review_cat <- cut(restaurant_info$review_count, c(0,7,20,60,200,500, 1000,5000,10000),labels = c(1:8))
+```
+
+
+```{r}
+#fit an ordered multinomial logit model.
+fit.polr <- polr(ordered(stars_int) ~  review_cat + categ.temp + RestaurantsPriceRange2 + NoiseLevel  , data = restaurant_info)
+display(fit.polr)
+
+##make prediction
+predx <- na.omit(expand.grid(review_cat =unique(restaurant_info$review_cat),
+                     categ.temp =unique(restaurant_info$categ.temp),
+                     RestaurantsPriceRange2 = unique(restaurant_info$RestaurantsPriceRange2) , 
+                     NoiseLevel = unique(restaurant_info$NoiseLevel)))
+
+predy <- predict(fit.polr, newdata = predx, type = "prob")
+```
+
+
+#####predictor : "review_cat","categ.temp","RestaurantsPriceRange2","NoiseLevel"
+```{r}
+#resd <- data.frame(predx,stars = predy)
+resd <- data.frame(predx[,c("review_cat","categ.temp","RestaurantsPriceRange2")],stars_int = predy)
+
+#temp <- melt(resd, id.vars = c("categ.temp","RestaurantsPriceRange2","NoiseLevel","review_cat")) 
+
+
+temp <- melt(resd, id.vars = c("categ.temp","RestaurantsPriceRange2","review_cat"))
+
+ggplot( temp )+
+  #geom_bar(  stat = "identity") +
+  geom_bar(position = "fill", stat = "identity") +
+  aes(x= review_cat, y =value, fill = variable) +
+  facet_wrap(~ categ.temp) +
+  #ylim(c(3,5))+
+  #geom_hline() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))+
+  ylab("prob of stars level") + xlab("review count level")
+```
+
+The above result is a point estimate and lacks information regarding the uncertainty of our estimates. We can add the uncertainty in the parameter estimate using the sim function.
+```{r,fig.width=12,fig.height=9}
+simfit<-sim(fit.polr)
+
+xx <- model.matrix(~ -1 + categ.temp + review_cat +  RestaurantsPriceRange2 + NoiseLevel ,data =predx)
+xb <- xx[,colnames(simfit@coef)]%*% t(simfit@coef)
+
+reslist<-vector("list",100)
+for(iter in 1:100){ 
+  pa<-invlogit(outer(-xb[,iter],simfit@zeta[iter,],"+")) 
+  pp<-cbind( pa[,1], pa[,2]-pa[,1],pa[,3]-pa[,2],pa[,4]-pa[,3],1-pa[,4]) 
+  resd<-data.frame(predx[,c("review_cat","categ.temp","RestaurantsPriceRange2")],iter=iter,stars_int=pp) 
+  reslist[[iter]]<-resd
+}
+
+temp <- melt(rbindlist(reslist),
+            id.var=c("review_cat","categ.temp","RestaurantsPriceRange2","iter"))
+ggplot(temp)+
+  geom_point(alpha=0.2)+ 
+  aes(x=categ.temp,y=value,group=iter,color=variable)+ 
+  facet_grid(variable~RestaurantsPriceRange2)+ 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  stat_summary(fun.y=mean, geom="line", aes(group=1, color ="royalblue4"))+
+  stat_summary(fun.y=function(x)quantile(x,0.1), geom="line", lty=3, aes(group = 1, color ="gery0"))+
+  stat_summary(fun.y=function(x)quantile(x,0.9), geom="line", lty=3, aes(group = 1, color ="grey0"))
+```
+
+#####Binned plot to check the model
+```{r}
+
+obsmat <-model.matrix(~-1+as.factor(stars_int) , data= restaurant_info)
+fitted <- fitted(fit.polr)
+resdimat<-obsmat[1:nrow(fitted),]-fitted
+
+par(mfrow=c(3,2))
+binnedplot(fitted[,1],resdimat[,1])
+binnedplot(fitted[,2],resdimat[,2])
+binnedplot(fitted[,3],resdimat[,3])
+binnedplot(fitted[,4],resdimat[,4])
+binnedplot(fitted[,5],resdimat[,5])
+
+```
+
+
+#####Consider more predictors: Parking(car), Delvery, Takout etc
+```{r}
+#fit an ordered multinomial logit model.
+fit.polr2 <- polr(ordered(stars_int) ~  review_cat + categ.temp + RestaurantsPriceRange2 + NoiseLevel +Parking +RestaurantsTakeOut + RestaurantsDelivery , data = restaurant_info)
+display(fit.polr2)
+
+# ##make prediction
+# predx2 <- na.omit(expand.grid(review_cat =unique(restaurant_info$review_cat),
+#                      categ.temp =unique(restaurant_info$categ.temp),
+#                      RestaurantsPriceRange2 = unique(restaurant_info$RestaurantsPriceRange2) ,
+#                      NoiseLevel = unique(restaurant_info$NoiseLevel),
+#                      Parking = c(TRUE ,FALSE),
+#                      RestaurantsTakeOut = c(TRUE ,FALSE),
+#                      RestaurantsDelivery = c(TRUE ,FALSE)))
+# 
+# predy2 <- predict(fit.polr2, newdata = predx2, type = "prob")
+
+obsmat2 <-model.matrix(~-1+as.factor(stars_int) , data= restaurant_info)
+fitted2 <- fitted(fit.polr2)
+resdimat2<-obsmat2[1:nrow(fitted2),]-fitted2
+
+par(mfrow=c(3,2))
+binnedplot(fitted2[,1],resdimat2[,1])
+binnedplot(fitted2[,2],resdimat2[,2])
+binnedplot(fitted2[,3],resdimat2[,3])
+binnedplot(fitted2[,4],resdimat2[,4])
+binnedplot(fitted2[,5],resdimat2[,5])
+```
+
+
+
+###2.  Logistic model
+```{r}
+#read data
+rm(list=ls())
+restaurant_info <- get(load(( "dataset/restaurant_info.Rdata")))
+#restaurant_category_count <- read.csv(file = "dataset/restaurant_category_count.csv")
+
+#str(restaurant_info)
+#colnames(restaurant_info)
+restaurant_info$categ.temp <- as.factor(restaurant_info$categ.temp)
+
+restaurant_info$Parking <- ifelse(str_detect(as.character(restaurant_info$BusinessParking),"True") == TRUE,TRUE, FALSE)
+
+
+#cut restaurants' stars into 2 level
+restaurant_info$stars_bio <- cut(restaurant_info$stars,c(0,3.1,5),labels = c("Below Average","Above Average"))
+
+#restaurant_info$review_cat <- cut(restaurant_info$review_count, c(0,7,20,60,200,500, 1000,5000,10000),labels = c(1:8))
+
+#look at how many NA does colmun have
+na_count <-data.frame(sapply(restaurant_info, function(y) sum(length(which(is.na(y))))))
+
+
+restaurant_info_nona <- na.omit(restaurant_info %>%
+                                  dplyr::select(stars_bio,review_count , categ.temp , Parking, RestaurantsPriceRange2, NoiseLevel, RestaurantsTakeOut, RestaurantsDelivery ))
+```
+
+For the prediction of categorical model is not that good, switch to the logistic model.
+
+Cut restaurants into two levels, below average(stars equal or less than 3), and above average(stars more than 3)
+```{r}
+fit.logistic <- glm(stars_bio ~ review_count + categ.temp +Parking+ RestaurantsPriceRange2 + NoiseLevel +RestaurantsTakeOut +RestaurantsDelivery , data = restaurant_info_nona,family = binomial(link = "logit"))
+display(fit.logistic)
+
+#look at the model fit
+marginalModelPlots(fit.logistic)
+
+binnedplot(fitted(fit.logistic),residuals(fit.logistic, type = "response"))
+
+
+# predx <- na.omit(expand.grid(review_count =unique(restaurant_info$review_count),
+#                      categ.temp =unique(restaurant_info$categ.temp),
+#                      RestaurantsPriceRange2 = unique(restaurant_info$RestaurantsPriceRange2) , 
+#                      NoiseLevel = unique(restaurant_info$NoiseLevel),
+#                      Parking = c(TRUE ,FALSE),
+#                      RestaurantsTakeOut = c(TRUE ,FALSE),
+#                      RestaurantsDelivery = c(TRUE ,FALSE)))
+
+```
+
+
+The binned residual looks better than five-stars-level categorical model.
+
+```{r}
+restaurant_info$observ <- ifelse(restaurant_info$stars_bio =="Below Average",0,1)
+
+predx <- restaurant_info %>% 
+  dplyr::select(review_count, categ.temp, Parking, RestaurantsPriceRange2,
+                NoiseLevel, RestaurantsTakeOut, RestaurantsDelivery )
+predy <- predict(fit.logistic, newdata = predx, type = "response")
+predy_level <- cut(predy,c(0,0.5,1),right = TRUE, labels = c(0,1))
+
+#confusion matrix
+mat <- confusion.matrix(restaurant_info$observ, predy_level,threshold=0.5)
+
+#calculate the accuracy measures
+cat("the ommission rate as a proportion of true occurrences misidentified", round(omission(mat),2),". \n")
+cat("The sensitivity is ",round(sensitivity(mat),2),". \n")
+cat("The specificity is ",round(specificity(mat),2),". \n")
+cat("The proportion of the presence and absence records correctly identified is ",round(prop.correct(mat),2),".")
+```
+
+The results look OK.
+
+Is there Interactions?
+
+```{r}
+rest_envir <- restaurant_info %>% 
+  dplyr::select(stars_bio,review_count , categ.temp , Parking, RestaurantsPriceRange2, NoiseLevel, RestaurantsTakeOut, RestaurantsDelivery )%>%
+  na.omit()
+rest_envir$RestaurantsDelivery <- factor(rest_envir$RestaurantsDelivery, 
+                                         labels=c("Delivery False","Delivery True"))
+rest_envir$RestaurantsTakeOut<-factor(rest_envir$RestaurantsTakeOut, labels=c("TakeOut False","TakeOut True"))
+rest_envir$Parking<-factor(rest_envir$Parking,labels=c("Parking False","Parking True"))
+```
+
+```{r}
+
+ggplot(rest_envir)+
+  aes(x = categ.temp, fill=NoiseLevel)+
+  geom_bar(position="fill")+
+  facet_grid( RestaurantsTakeOut ~ RestaurantsDelivery)+
+  scale_fill_manual(values=c("peachpuff","lightsalmon","coral1","firebrick1"))+
+  ylab("") + xlab("")+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+
+ggplot(rest_envir)+
+  aes(x = categ.temp, fill=factor(Parking))+
+  geom_bar(position="fill")+
+  facet_grid( RestaurantsTakeOut ~ RestaurantsDelivery)+
+  scale_fill_manual(values=c("cornflowerblue","lightskyblue"))+
+  ylab("") + xlab("")+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+As mentioned above, there are both similarity and distinction between restaurants average star distribution and customers review stars distributions. So here let's look at their correlations.
+
+```{r}
+
+review_sentiment_restaurant <- get( load("E:/MSSP/MA678/Midproj_Yelp/Data/review_sentiment_restaurant.Rdata"))
+
+review_sentiment_restaurant %<>% dplyr::select(business_id, stars.x)
+
+restaurant_all <- restaurant_info %>% inner_join(review_sentiment_restaurant, by ="business_id")
+#colnames(restaurant_all)
+#rm(restaurant_info,review_sentiment_restaurant)
+```
+```{r}
+star.cor <- cor(restaurant_all$stars,restaurant_all$stars.x)
+cat("Correlation between restaurants average stars and customers review stars is ", round(star.cor,2),".\n")
+```
+
+
+The correlation seems to be not that high. What if we add customers review stars into predictor?
+
+
+```{r,eval = FALSE}
+#fit an ordered multinomial logit model.
+fit.polr2 <- polr(ordered(stars_int) ~  review_count + categ.temp + RestaurantsPriceRange2 + NoiseLevel +Parking +RestaurantsTakeOut + RestaurantsDelivery  +stars.x + review_sentiment, data = restaurant_all)
+display(fit.polr2)
+
+# ##make prediction
+# predx2 <- na.omit(expand.grid(review_cat =unique(restaurant_info$review_cat),
+#                      categ.temp =unique(restaurant_info$categ.temp),
+#                      RestaurantsPriceRange2 = unique(restaurant_info$RestaurantsPriceRange2) ,
+#                      NoiseLevel = unique(restaurant_info$NoiseLevel),
+#                      Parking = c(TRUE ,FALSE),
+#                      RestaurantsTakeOut = c(TRUE ,FALSE),
+#                      RestaurantsDelivery = c(TRUE ,FALSE)))
+# 
+# predy2 <- predict(fit.polr2, newdata = predx2, type = "prob")
+
+obsmat2 <-model.matrix(~-1+as.factor(stars_int) , data= restaurant_info)
+fitted2 <- fitted(fit.polr2)[1:nrow(obsmat2),]
+resdimat2<-obsmat2-fitted2
+
+par(mfrow=c(3,2))
+binnedplot(fitted2[,1],resdimat2[,1])
+binnedplot(fitted2[,2],resdimat2[,2])
+binnedplot(fitted2[,3],resdimat2[,3])
+binnedplot(fitted2[,4],resdimat2[,4])
+binnedplot(fitted2[,5],resdimat2[,5])
+```
+
+
+```{r}
+
+# restaurant_all$stars_bio <- cut(restaurant_all$stars,c(0,3.1,5),labels = c("Below Average","Above Average"))
+# 
+# temp <- restaurant_all%>% dplyr::select(stars_bio , review_count , categ.temp , RestaurantsPriceRange2 , NoiseLevel ,Parking ,RestaurantsTakeOut , RestaurantsDelivery  ,stars.x )
+restaurant_all  %<>%
+  dplyr::select(stars_bio , review_count , categ.temp , RestaurantsPriceRange2 , NoiseLevel ,Parking ,RestaurantsTakeOut , RestaurantsDelivery  ,stars.x)%>%
+  na.omit()
+
+
+
+fit.logistic2 <- glm(stars_bio ~ review_count + categ.temp + RestaurantsPriceRange2 + NoiseLevel +Parking +RestaurantsTakeOut + RestaurantsDelivery  +stars.x  , data =restaurant_all,family = binomial(link = "logit"))
+summary(fit.logistic2)
+
+#look at the model fit
+#marginalModelPlots(fit.logistic2)
+
+#binnedplot(fitted(fit.logistic2),residuals(fit.logistic2, type = "response"))
+
+
+```
+
+```{r}
+restaurant_all$observ <- ifelse(restaurant_all$stars_bio =="Below Average",0,1)
+
+predx2 <- restaurant_all %>% 
+  dplyr::select(review_count, categ.temp, Parking, RestaurantsPriceRange2,
+                NoiseLevel, RestaurantsTakeOut, RestaurantsDelivery , 
+                stars.x)
+predy2 <- predict(fit.logistic2, newdata = predx2, type = "response")
+predy2_level <- cut(predy2,c(0,0.5,1),right = TRUE, labels = c(0,1))
+
+#confusion matrix
+mat2 <- confusion.matrix(restaurant_all$observ, predy2_level,threshold=0.5)
+mat2
+#calculate the accuracy measures
+cat("the ommission rate as a proportion of true occurrences misidentified", round(omission(mat2),2),". \n")
+cat("The sensitivity is ",round(sensitivity(mat2),2),". \n")
+cat("The specificity is ",round(specificity(mat2),2),". \n")
+cat("The proportion of the presence and absence records correctly identified is ",round(prop.correct(mat2),2),".")
+
+```
+
+
+
+#Discussion 
+
+##A.   Implication, Limitation & Future direction
+
+Analyzing customers' reviews, stars and restuarants' star category, and exploring the relation among them is fun! But due to time and my capability limitation ><, my model and prediction is not that accurate.
+
+And there is also some drawback in the Yelp information collection system. The updates should be encouraged and even Mandatory.
+
+
+
+#Reference
+
+$\left [ 1 \right ]$  [CORALS:Who are My Potential New Customers? Tapping into the Wisdom of Customers’ Decisions ](https://s3-media3.fl.yelpcdn.com/assets/srv0/engineering_pages/f63a086ef2a3/assets/vendor/pdf/DSC_R09_CORALSWhoAreMyPotentialNewCustomers.pdf)
+
+$\left [ 2 \right ]$  [Clustered Model Adaption for Personalized Sentiment Analysis](https://s3-media3.fl.yelpcdn.com/assets/srv0/engineering_pages/26e41eb89f65/assets/vendor/pdf/DSC_R08_ClusteredModelAdaptionForPersonalizedSentimentAnalysis.pdf)
+
+$\left [ 3 \right ]$  [Personalizing Yelp Star Ratings: a Semantic Topic Modeling Approach](https://www.yelp.com/html/pdf/YelpDatasetChallengeWinner_PersonalizingRatings.pdf)
+
+$\left [ 4 \right ]$  [Improving Restaurants by Extracting Subtopics from Yelp Reviews](https://www.yelp.com/html/pdf/YelpDatasetChallengeWinner_ImprovingRestaurants.pdf)
+
+$\left [ 5 \right ]$  [Inferring Future Business Attention](https://www.yelp.com/html/pdf/YelpDatasetChallengeWinner_InferringFuture.pdf)
+
+$\left [ 6 \right ]$  [Oversampling with Bigram Multinomial Naive Bayes to Predict Yelp Review Star Classes](https://kevin11h.github.io/YelpDatasetChallengeDataScienceAndMachineLearningUCSD/)
+
+$\left [ 7 \right ]$ [The Statistical Difference Between 1-Star and 5-Star Reviews on Yelp](https://minimaxir.com/2014/09/one-star-five-stars/)
+
+$\left [ 8 \right ]$ [Predict Ratings for Chinese Restaurants using Sentiment Analysis](https://github.com/angelayuanyuan/yelp-Angela-Yuan)

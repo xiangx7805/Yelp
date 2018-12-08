@@ -1,0 +1,140 @@
+---
+title: "EDA user"
+author: "Xiang XU"
+date: "November 23, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(knitr,ggplot2, tidyverse, dplyr, ggraph, stringr, wordcloud, tidytext,tidyr,lubridate, widyr,jsonlite,sentimentr, benford.analysis)
+```
+
+##load prepared data
+```{r}
+#clear memory
+rm(list = ls())
+
+
+
+#read user_info data
+user_info <- get(load("./Dataset/user_info.Rdata"))
+business_info <- get(load("./Dataset/business_info.Rdata"))
+checkin <- get(load("./Dataset/checkin.Rdata"))
+tip <- get(load("./Dataset/tip.Rdata"))
+photo <- get(load("./Dataset/photos.Rdata"))
+
+rm(list = c("df_user_info","df_review","df_business_info","df_tip","df_photos","df_checkin"))
+```
+
+###add sentiment score to review data
+
+```{r}
+review <- get(load("./Dataset/review.Rdata"));rm("df_review")
+dim(review)
+#too large to process
+
+#review sentiment
+# review_sentence <- review %>%
+#                     #group_by(review_id) %>%
+#                     unnest_tokens(sentence, text, token = "sentences")
+# review_sentiment <- review_sentence %>% 
+#                     sentiment(na.omit(sentence)) %>%
+#                     group_by(review_id)%>%
+#                     mutate(review_sentiment = sum(sentiment))
+
+```
+
+\color{red} 
+BE CAREFUL!!! IT TOOK ME 24 HOURS RUN THE WHOLE PROCESS!!! 
+\color{black}
+```{r, eval=FALSE}
+tot_review <- dim(review)[1]
+process_round <- ceiling(tot_review/10000)
+
+##round 1
+review1 <- review[1:10000,]
+review1_sentence <- review1 %>% unnest_tokens(sentence, text, token = "sentences")
+review1_element <- tibble::rowid_to_column(review1_sentence, "element_id")
+
+review1_sentiment <- sentiment(na.omit(get_sentences(review1_element$sentence)) )
+review_sentiment_score <- review1_element %>% 
+                           inner_join(review1_sentiment, by = "element_id") %>%
+                           group_by(review_id)%>%
+                           mutate(review_sentiment = sum(sentiment))%>%
+                           select(review_id, user_id,business_id, stars, date, review_sentiment)%>%
+                           unique()
+rm("review1","review1_sentence","review1_element","review1_sentiment")
+                           
+##round 2 : 600
+
+for (i in 2:process_round) {
+  
+  if(i< process_round)   review_temp <- review[((i-1)*10000 +1) :(10000*i),]
+  else review_temp <- review[((i-1)*10000 +1):tot_review,]
+  
+  review_temp_sentence <- review_temp %>% unnest_tokens(sentence, text, token = "sentences")
+  review_temp_element <- tibble::rowid_to_column(review_temp_sentence, "element_id")
+
+  review_temp_sentiment <- sentiment(na.omit(get_sentences(review_temp_element$sentence)) )
+  review_temp_sentiment_score <- review_temp_element %>% 
+                           inner_join(review_temp_sentiment, by = "element_id") %>%
+                           group_by(review_id)%>%
+                           mutate(review_sentiment = sum(sentiment))%>%
+                           select(review_id, user_id,business_id, stars, date, review_sentiment)%>%
+                           unique()
+  print(paste("round",i,"processed successfully, with", dim(review_temp_sentiment_score)[1],"observations"))
+  
+  review_sentiment_score <- rbind(review_sentiment_score, review_temp_sentiment_score)
+  print(paste("now sentiment dataframe has ", dim(review_sentiment_score)[1],"observations."))
+  
+  rm("review_temp","review_temp_sentence","review_temp_element","review_temp_sentiment",
+     "review_temp_sentiment_score")
+
+}
+
+
+save(review_sentiment_score, file = "dataset/review_sentiment_score.Rdata")
+
+```
+
+###simple benford analysis on users' review sentiment score
+```{r}
+bfd.review <- benford(review_sentiment_score$review_sentiment)
+plot(bfd.review)
+suspect.review <- getSuspects(bfd.review, review_sentiment_score)
+suspect.ratio <- nrow(suspect.review)/nrow(review_sentiment_score)
+print(paste("The suspect reviews account for",round(suspect.ratio*100,2), "%" ))
+```
+
+
+##filter all resturant data from 
+
+
+
+```{r}
+# Chinese_business <- business_info %>%
+#                     filter(str_detect(categories,"Chinese"))
+# Chinese_review <- review %>%
+#                   inner_join(Chinese_business, by = "business_id")
+```
+
+
+```{r}
+str(user_info)
+user_time_count  <-  user_info %>%
+                     mutate(yelp_year = year(yelping_since)) %>%
+                     group_by(yelp_year)%>%
+                     mutate(year_user_count = n(),
+                              year_review_count = sum(review_count, na.rm = TRUE))
+kable(user_time_count)
+str(user_time_count)
+ggplot(user_time_count) +
+  aes(x= yelp_year, y = year_user_count)+
+  geom_point(aes(size = year_review_count), alpha =1/3)+
+  geom_smooth( se = FALSE) +
+  #scale_x_discrete(breaks = c(2004, 2006, 2008,2010, 2012, 2014,2016,2018), labels=  c(2004, 2006, 2008,2010, 2012, 2014,2016,2018))+
+  theme(axis.text.x = element_text(angle = 45, hjust =1, vjust =1))
+  
+```
+

@@ -1,0 +1,133 @@
+---
+title: "07 logistic model"
+author: "Xiang XU"
+date: "December 4, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+pacman::p_load(knitr,ggplot2,  dplyr, ggraph, stringr, wordcloud, tidytext,tidyr,lubridate, widyr,jsonlite,sentimentr, benford.analysis, magrittr,lme4,arm,nnet,mgcv,data.table,car,haven,SDMTools)
+
+```
+```{r}
+#read data
+rm(list=ls())
+restaurant_info <- get(load(( "dataset/restaurant_info.Rdata")))
+#restaurant_category_count <- read.csv(file = "dataset/restaurant_category_count.csv")
+
+str(restaurant_info)
+colnames(restaurant_info)
+restaurant_info$categ.temp <- as.factor(restaurant_info$categ.temp)
+
+restaurant_info$Parking <- ifelse(str_detect(as.character(restaurant_info$BusinessParking),"True") == TRUE,TRUE, FALSE)
+
+#restaurant_info$review_cat <- cut(restaurant_info$review_count, c(0,7,20,60,200,500, 1000,5000,10000),labels = c(1:8))
+
+#look at how many NA does colmun have
+na_count <-data.frame(sapply(restaurant_info, function(y) sum(length(which(is.na(y))))))
+
+temp <- restaurant_info %>% dplyr::select(stars_bio,review_count , categ.temp , Parking, RestaurantsPriceRange2, NoiseLevel, RestaurantsTakeOut, RestaurantsDelivery )
+temp.nona <- na.omit(temp)
+```
+
+For the prediction of categorical model is not taht good, we try to do the logistic model.
+
+We cut restaurants into two levels, below average(stars equal or less than 3), and above average(stars more than 3)
+```{r}
+#cut restaurants' stars into 2 level
+restaurant_info$stars_bio <- cut(restaurant_info$stars,c(0,3.1,5),labels = c("Below Average","Above Average"))
+
+
+fit.logistic <- glm(stars_bio ~ review_count + categ.temp +Parking+ RestaurantsPriceRange2 + NoiseLevel +RestaurantsTakeOut +RestaurantsDelivery , data = temp.nona,family = binomial(link = "logit"))
+summary(fit.logistic)
+
+#look at the model fit
+marginalModelPlots(fit.logistic)
+
+binnedplot(fitted(fit.logistic),residuals(fit.logistic, type = "response"))
+
+#confusion matrix
+# predx <- na.omit(expand.grid(review_count =unique(restaurant_info$review_count),
+#                      categ.temp =unique(restaurant_info$categ.temp),
+#                      RestaurantsPriceRange2 = unique(restaurant_info$RestaurantsPriceRange2) , 
+#                      NoiseLevel = unique(restaurant_info$NoiseLevel),
+#                      Parking = c(TRUE ,FALSE),
+#                      RestaurantsTakeOut = c(TRUE ,FALSE),
+#                      RestaurantsDelivery = c(TRUE ,FALSE)))
+
+```
+
+
+The binned residual looks better than multilevel model.
+
+```{r}
+restaurant_info$observ <- ifelse(restaurant_info$stars_bio =="Below Average",0,1)
+
+predx <- restaurant_info %>% 
+  dplyr::select(review_count, categ.temp, Parking, RestaurantsPriceRange2,
+                NoiseLevel, RestaurantsTakeOut, RestaurantsDelivery )
+predy <- predict(fit.logistic, newdata = predx, type = "response")
+predy_level <- cut(predy,c(0,0.5,1),right = TRUE, labels = c(0,1))
+
+
+mat <- confusion.matrix(restaurant_info$observ, predy_level,threshold=0.5)
+
+#calculate the accuracy measures
+cat("the ommission rate as a proportion of true occurrences misidentified", round(omission(mat),2),". \n")
+cat("The sensitivity is ",round(sensitivity(mat),2),". \n")
+cat("The specificity is ",round(specificity(mat),2),". \n")
+cat("The proportion of the presence and absence records correctly identified is ",round(prop.correct(mat),2),".")
+```
+The results look OK.
+
+
+Is there Interactions?
+
+```{r}
+rest_envir <- restaurant_info %>% 
+  dplyr::select(stars_bio,review_count , categ.temp , Parking, RestaurantsPriceRange2, NoiseLevel, RestaurantsTakeOut, RestaurantsDelivery )%>%
+  na.omit()
+rest_envir$RestaurantsDelivery <- factor(rest_envir$RestaurantsDelivery, 
+                                         labels=c("Delivery False","Delivery True"))
+rest_envir$RestaurantsTakeOut<-factor(rest_envir$RestaurantsTakeOut, labels=c("TakeOut False","TakeOut True"))
+rest_envir$Parking<-factor(rest_envir$Parking,labels=c("Parking False","Parking True"))
+```
+
+```{r}
+
+ggplot(rest_envir)+
+  aes(x = categ.temp, fill=NoiseLevel)+
+  geom_bar(position="fill")+
+  facet_grid( RestaurantsTakeOut ~ RestaurantsDelivery)+
+  scale_fill_manual(values=c("peachpuff","lightsalmon","coral1","firebrick1"))+
+  ylab("") + xlab("")+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+
+ggplot(rest_envir)+
+  aes(x = categ.temp, fill=factor(Parking))+
+  geom_bar(position="fill")+
+  facet_grid( RestaurantsTakeOut ~ RestaurantsDelivery)+
+  scale_fill_manual(values=c("cornflowerblue","lightskyblue"))+
+  ylab("") + xlab("")+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+```
+
+```{r}
+ggplot(rest_envir)+
+  aes(x=categ.temp,y =NoiseLevel)+
+  geom_jitter()+
+  facet_grid( RestaurantsTakeOut ~ RestaurantsDelivery)+
+  ylab("")+xlab("")+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+ggplot(rest_envir)+
+  aes(x=categ.temp,y =Parking)+
+  geom_jitter()+
+  facet_grid( RestaurantsTakeOut ~ RestaurantsDelivery)+
+  scale_fill_manual(values=c("cornflowerblue","coral1"))+ylab("")+xlab("")+
+  theme(axis.text.x = element_text(angle = 60, hjust = 1))
+
+```
+

@@ -1,0 +1,92 @@
+---
+title: "04 mutilevel model"
+author: "Xiang XU"
+date: "December 2, 2018"
+output: pdf_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(knitr,ggplot2, tidyverse, dplyr, ggraph, stringr, wordcloud, tidytext,tidyr,lubridate, widyr,jsonlite,sentimentr, benford.analysis, magrittr,lme4,arm)
+
+```
+```{r}
+#read data
+restaurant_info <- get(load(( "dataset/restaurant_info.Rdata")))
+restaurant_category_count <- read.csv(file = "dataset/restaurant_category_count.csv")
+```
+```{r}
+#simplest lm
+regout <- lm( stars ~RestaurantsPriceRange2+ review_count + categ.temp-1 ,restaurant_info)
+summary(regout)
+plot(regout)
+```
+
+####Varying Intercepts
+```{r}
+regout2 <- lmer(stars ~RestaurantsPriceRange2+ review_count +( 1|categ.temp) ,restaurant_info)
+summary(regout2)
+plot(regout2)
+
+#The estimated regression line for an average subject is thus 
+head(fixef(regout2))
+#These tell us how much the intercept is shifted up or down in particular subjects
+head(ranef(regout2)$categ.temp)
+head(coef(regout)$categ.temp)
+
+
+#The standard errors differ according to the sample size (time measurements) within each subject
+head(se.fixef(regout2))
+head(se.ranef(regout2)$categ.temp)
+```
+
+
+```{r}
+regout3 <- lmer(stars ~ RestaurantsPriceRange2+review_count +( 1+review_count|categ.temp) ,restaurant_info)
+summary(regout3)
+plot(regout3)
+```
+ 
+ scale variables
+```{r}
+regout3 <- lmer(stars ~ scale(review_count) +( 1+ scale(review_count)|categ.temp) ,restaurant_info)
+summary(regout3)
+plot(regout3)
+```
+ 
+ 
+```{r}
+regout4 <- lmer(stars ~ scale(review_count) +( 1|categ.temp)+(0+ scale(review_count)|categ.temp) ,restaurant_info)
+summary(regout4)
+plot(regout4)
+
+head(ranef(regout3)$categ.temp)
+```
+
+```{r}
+regout5 <- lmer(stars ~ (1|RestaurantsPriceRange2)+review_count +( 1+review_count|categ.temp) ,restaurant_info)
+summary(regout5)
+plot(regout5)
+```
+
+ ###compare models
+```{r}
+anova(regout2, regout3,regout4)
+```
+ 
+```{r}
+regout.mle = lmer(stars ~ scale(review_count) +( 1|categ.temp)+(0+ scale(review_count)|categ.temp) ,restaurant_info, REML=FALSE)
+summary(regout.mle)
+plot(regout.mle )
+```
+
+###check model
+```{r}
+plot(fitted(regout4),resid(regout4,type="pearson"),col="blue") #check the constant standard deviation
+```
+
+```{r}
+qqnorm(resid(regout4))
+```
+

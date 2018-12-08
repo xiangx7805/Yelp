@@ -1,0 +1,511 @@
+---
+title: "EDA user"
+author: "Xiang XU"
+date: "November 23, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+pacman::p_load(knitr,ggplot2, tidyverse, dplyr, ggraph, stringr, wordcloud, tidytext,tidyr,lubridate, widyr,jsonlite,sentimentr, benford.analysis, magrittr,wordcloud2, webshot ,htmlwidgets)
+webshot::install_phantomjs()
+
+```
+
+###User_info
+
+```{r}
+##load prepared data
+rm(list = ls())
+user_info <- get(load("./Dataset/user_info.Rdata"));rm("df_user_info")
+
+```
+
+look at users' stars density
+```{r}
+ggplot(user_info, aes(x= average_stars, y =..density..)) + 
+  geom_density(fill = "tomato", color =NA, adjust =2)+
+  ggtitle("Density of users' stars")
+```
+
+
+look at users' review count density
+```{r}
+
+ggplot(user_info, aes(x= review_count, y =..density..)) + 
+  geom_density(fill = "salmon", color =NA, adjust =2)+
+  ggtitle("Density of users' review count")
+```
+ 
+It seems there are some outliers in the review count
+```{r}
+ggplot(user_info, aes(y= review_count)) + 
+  geom_boxplot()+
+  ggtitle("Boxplot of users' review count")
+
+summary(user_info$review_count)
+```
+
+##### Outliers?
+The max value of a user's review count is 12723, it seems impossible, let's look at these guy who have more than 10000 reviews, just out of curiosity.
+```{r}
+user_review_outliers <- user_info %>%
+  filter(review_count >10000) %>%
+  arrange(desc(review_count))
+user_review_outliers
+
+```
+And look at their reviews
+```{r}
+#review <- get(load("./dataset/review.Rdata"))
+# review_restaurant <- review %>%
+#   inner_join(restaurant_info, by ="business_id")
+#save(review_restaurant, file = "./data/df_review_restaurant.Rdata")
+user_review_outliers %<>% inner_join(review_sentiment_restaurant, by = "user_id") %>% unique()%>%
+  select(user_id,name.x,stars.x, review_count.x,date, stars.y, review_sentiment)
+user_review_outliers
+```
+These review and stars seem fair to me.
+
+#####Remove outliers
+
+To detect the outliers I use the command boxplot.stats()$out which use the Tukey’s method to identify and temporarily remove the outliers ranged above and below the 1.5*IQR.
+
+```{r}
+View(user_info)
+
+length(boxplot.stats(user_info$review_count)$out)
+
+user_rm_outlier <- user_info
+source("http://goo.gl/UUyEzD")
+outlier_action <- outlierKD(user_rm_outlier, review_count)
+
+user_rm_outlier %<>% na.omit()
+
+summary(user_rm_outlier$review_count)
+
+ggplot(user_rm_outlier, aes(y= review_count)) + 
+  geom_boxplot()#+ geom_violin()
+  #ggtitle("Boxplot of users' review count")
+ggplot(user_rm_outlier, aes(x= review_count, y =..density..)) + 
+  geom_density(fill = "salmon", color =NA, adjust =2)+
+  ggtitle("Density of users' review count")
+
+```
+
+
+
+####Correlations
+Is there realations between review count, yelping-year, gender, n_friends and stars?
+
+#####Yelping year
+```{r}
+#generatte a variable for how many years ahs a user been "yelping"
+user_rm_outlier$yelping_year <- 2018 - year(user_rm_outlier$yelping_since)
+unique(user_rm_outlier$yelping_year)
+
+
+#factorize yelping years into 4 levels
+#i <- 1
+for(i in 1:nrow(user_rm_outlier)) {
+  if(user_rm_outlier$yelping_year_level[i]== "0-2 yrs") {user_rm_outlier$yelping_year_level_factor[i] <- 1}
+  else{
+    if(user_rm_outlier$yelping_year_level[i]=="3-5 yrs" ) {user_rm_outlier$yelping_year_level_factor[i] <- 2}
+    else{
+      if(user_rm_outlier$yelping_year_level[i]=="6-9 yrs") {user_rm_outlier$yelping_year_level_factor[i] <- 3}
+      else{
+        user_rm_outlier$yelping_year_level_factor[i] <- 4
+      }
+    }
+  }
+  
+  # i <- i+1
+  # if(i > nrow(user_rm_outlier)) break
+}
+
+user_rm_outlier$yelping_year_level <- as.factor(user_rm_outlier$yelping_year_level)
+
+temp <- user_rm_outlier %>% select(c(user_id,review_count, average_stars,yelping_year_level))
+levels(temp$yelping_year_level) <- c("0-2 yrs" , "3-5 yrs" ,"6-9 yrs" , "> 10 yrs")
+ggplot(temp, aes(x= review_count, y =..density.. )) + 
+  geom_density(fill = "salmon", color =NA, adjust =2)+
+  facet_grid(yelping_year_level ~.)+
+  ggtitle("Density of users' review count by yelping year")
+
+
+ggplot(temp, aes(x= average_stars, y =..density.. ,group = yelping_year_level)) + 
+  geom_density(fill = "salmon", color =yelping_year_level, adjust =2)+
+  #facet_grid(yelping_year~.)+
+  ggtitle("Density of users' stars by yelping year")
+
+
+ggplot(user_rm_outlier, aes(x= factor(yelping_year_level),y= review_count)) + 
+  geom_boxplot()+
+  #geom_boxplot(aes(group= yelping_year_level))+
+  ggtitle("Boxplot of users' review count by yelping year")
+
+  
+position=position_jitter(width=.3, height=.08)
+```
+
+###WordCloud
+
+```{r}
+
+#star0.review <- df_review_restaurant %>%  filter(stars.x == 0)
+```
+####star 1
+
+```{r}
+rm(list= ls())
+df_review_restaurant <- get(load("E:/MSSP/MA678/Midproj_Yelp/Data/df_review_restaurant.Rdata"));rm(review_restaurant)
+
+###filter reviews into different star levels
+#the star column of review is `stars.x`
+star1.review <- df_review_restaurant %>%  filter(stars.x == 1)
+
+# star1.review.count1 <- star1.review %>% 
+#   unnest_tokens(bigram, text, token = "ngrams", n = 1)%>%
+#   transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))%>%
+#   filter(!bigram %in% stop_words$word ,
+#           !bigram %in% "[\\s]+",
+#           !bigram %in% "")%>%
+#    count(bigram, sort = TRUE)
+
+star1.review.count <- star1.review %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+# 
+# star1.review.count3 <- star1.review %>% 
+#   unnest_tokens(bigram, text, token = "ngrams", n = 3)%>%
+#   transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+#    separate(bigram, c("word1", "word2","word3", sep = " ")) %>%
+#    filter(!word1 %in% stop_words$word ,
+#           !word1 %in% "[\\s]+",
+#           !word1 %in% "") %>%
+#    filter(!word2 %in% stop_words$word,
+#           !word2 %in% "[\\s]+",
+#           !word2 %in% "")%>%
+#    filter(!word3 %in% stop_words$word,
+#           !word3 %in% "[\\s]+",
+#           !word3 %in% "")%>%
+#    count(word1, word2,word3, sort = TRUE) %>%
+#    unite(bigram, word1, word2 ,word3 ,sep = " ")
+
+#star1.review.count <- rbind(star1.review.count1,
+#                            star1.review.count2)
+
+save(star1.review.count, file = "data/star1.review.count.Rdata")
+
+star1_review_wordcloud <- wordcloud(star1.review.count$bigram,star1.review.count$n,max.words = 500,color = "royalblue")
+star1_review_wordcloud2 <- wordcloud2(star1.review.count, shape = 'circle', color = "darkorchid")
+
+##save wordcloud as html or pdf
+#install.packages("webshot")
+
+# save it in html
+library("htmlwidgets")
+saveWidget(star1_review_wordcloud2,"yelp_star1_review_wordcloud2.html",selfcontained = F)
+# and in pdf
+#webshot("yelp_star1_review_wordcloud2.html","star1_review_wordcloud2.pdf", delay =5, vwidth = 480, vheight=480)
+```
+
+
+####star 2
+```{r}
+##load data
+rm(list= ls())
+df_review_restaurant <- get(load("E:/MSSP/MA678/Midproj_Yelp/Data/df_review_restaurant.Rdata"));rm(review_restaurant)
+
+###filter reviews into different star levels
+#the star column of review is `stars.x`
+star2.review <- df_review_restaurant %>%  filter(stars.x == 2)
+
+star2.review.count1 <- star2.review[1:(nrow(star2.review)/2),] %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+
+star2.review.count2 <- star2.review[(nrow(star2.review)/2):nrow(star2.review),] %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+
+
+star2.review.count <- rbind(star2.review.count1,star2.review.count2)
+rm(star2.review.count1,star2.review.count2)
+
+star2.review.count %<>% group_by(bigram) %>% mutate(nn= sum(n)) %>% select(-n)
+save(star2.review.count, file = "data/star2.review.count.Rdata")
+
+
+wordcloud(star2.review.count$bigram,star2.review.count$nn,max.words = 1000,color = "forestgreen")
+star2_review_wordcloud2 <- wordcloud2(star2.review.count, shape = 'circle', color = "forestgreen",size = 0.3)
+
+
+saveWidget(star2_review_wordcloud2,"yelp_star2_review_wordcloud2.html",selfcontained = F)
+# and in pdf
+webshot("yelp_star2_review_wordcloud2.html","star2_review_wordcloud2.pdf", delay =5, vwidth = 480, vheight=480)
+
+```
+
+####star 3
+
+```{r}
+##load data
+rm(list= ls())
+df_review_restaurant <- get(load("E:/MSSP/MA678/Midproj_Yelp/Data/df_review_restaurant.Rdata"));rm(review_restaurant)
+
+###filter reviews into different star levels
+#the star column of review is `stars.x`
+star3.review <- df_review_restaurant %>%  filter(stars.x == 3)
+
+####################
+star3.review.count1 <- star3.review[1:(nrow(star3.review)/2),] %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+
+star3.review.count2 <- star3.review[(nrow(star3.review)/2):nrow(star3.review),] %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+
+
+star3.review.count <- rbind(star3.review.count1,star3.review.count2)
+
+star3.review.count %<>% group_by(bigram) %>% mutate(nn= sum(n)) %>% select(-n)
+save(star3.review.count, file = "data/star3.review.count.Rdata")
+
+
+
+wordcloud(star3.review.count$bigram,star3.review.count$nn,max.words = 1000,color = "royalblue")
+star3_review_wordcloud2 <- wordcloud2(star3.review.count, shape = 'circle', color = "royalblue",size = .3)
+
+saveWidget(star3_review_wordcloud2,"yelp_star3_review_wordcloud2.html",selfcontained = F)
+# and in pdf
+webshot("yelp_star3_review_wordcloud2.html","star3_review_wordcloud2.pdf", delay =5, vwidth = 480, vheight=480)
+
+
+```
+
+####star 4
+
+```{r}
+##load data
+rm(list= ls())
+df_review_restaurant <- get(load("E:/MSSP/MA678/Midproj_Yelp/Data/df_review_restaurant.Rdata"));rm(review_restaurant)
+
+###filter reviews into different star levels
+#the star column of review is `stars.x`
+star4.review <- df_review_restaurant %>%  filter(stars.x == 4)
+
+#############
+star4.review.count1 <- star4.review[1:(nrow(star4.review)/3),] %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+
+star4.review.count2 <- star4.review[(nrow(star4.review)/3+1):(nrow(star4.review)/3*2),] %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+
+star4.review.count3 <- star4.review[(nrow(star4.review)/3*2+1):nrow(star4.review),] %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+
+
+star4.review.count <- rbind(star4.review.count1,star4.review.count2,star4.review.count3)
+
+star4.review.count %<>% group_by(bigram) %>% mutate(nn= sum(n)) %>% select(-n)
+save(star4.review.count, file = "data/star4.review.count.Rdata")
+
+
+wordcloud(star4.review.count$bigram,star4.review.count$nn,max.words = 1000,color = "coral")
+star4_review_wordcloud2 <- wordcloud2(star4.review.count, shape = 'circle', color = "coral",size = .3)
+
+saveWidget(star4_review_wordcloud2,"yelp_star4_review_wordcloud2.html",selfcontained = F)
+# and in pdf
+webshot("yelp_star4_review_wordcloud2.html","star4_review_wordcloud2.pdf", delay =5, vwidth = 480, vheight=480)
+
+
+```
+
+
+####star 5
+```{r}
+
+##load data
+rm(list= ls())
+df_review_restaurant <- get(load("E:/MSSP/MA678/Midproj_Yelp/Data/df_review_restaurant.Rdata"));rm(review_restaurant)
+
+###filter reviews into different star levels
+#the star column of review is `stars.x`
+star5.review <- df_review_restaurant %>%  filter(stars.x == 5)
+
+#############
+
+star5.review.count1 <- star5.review[1:(nrow(star5.review)/3),] %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+
+star5.review.count2 <- star5.review[(nrow(star5.review)/3):(nrow(star5.review)/3*2),] %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+
+star5.review.count3 <- star5.review[(nrow(star5.review)/3*2):nrow(star5.review),] %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2)%>%
+  transmute(bigram = str_extract(bigram , "[a-z'\\s]+"))  %>%
+   separate(bigram, c("word1", "word2", sep = " ")) %>%
+   filter(!word1 %in% stop_words$word ,
+          !word1 %in% "[\\s]+",
+          !word1 %in% "") %>%
+   filter(!word2 %in% stop_words$word,
+          !word2 %in% "[\\s]+",
+          !word2 %in% "")%>%
+   count(word1, word2, sort = TRUE) %>%
+   unite(bigram, word1, word2 ,sep = " ")
+
+
+
+
+star5.review.count <- rbind(star5.review.count1,star5.review.count2,star5.review.count3)
+
+star5.review.count %<>% group_by(bigram) %>% mutate(nn= sum(n)) %>% select(-n)
+save(star5.review.count, file = "data/star5.review.count.Rdata")
+
+
+
+wordcloud(star5.review.count$bigram,star5.review.count$nn,max.words = 1000,color = "tomato")
+star5_review_wordcloud2 <- wordcloud2(star5.review.count, shape = 'circle', color = "tomato",size=.3)
+
+saveWidget(star5_review_wordcloud2,"yelp_star5_review_wordcloud2.html",selfcontained = F)
+# and in pdf
+webshot("yelp_star5_review_wordcloud2.html","star5_review_wordcloud2.pdf", delay =5, vwidth = 480, vheight=480)
+
+
+```
+
+
+
+```{r}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

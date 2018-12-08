@@ -1,0 +1,21 @@
+---
+title: "restaurant info"
+author: "Xiang XU"
+date: "December 2, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+add more info to restaurant info
+
+inner_join with restaurant attributes
+
+```{r}
+restaurant_info %<>% inner_join(df_business_attributes)
+
+save(restaurant_info, file = "./dataset/restaurant_info.Rdata")
+```
+

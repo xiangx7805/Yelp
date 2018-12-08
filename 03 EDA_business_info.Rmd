@@ -1,0 +1,149 @@
+---
+title: "EDA user"
+author: "Xiang XU"
+date: "November 23, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set( echo =FALSE,warning=FALSE, message=FALSE)
+pacman::p_load(knitr,ggplot2, tidyverse, dplyr, ggraph, stringr, wordcloud, tidytext, tidyr, lubridate, widyr,jsonlite,sentimentr, benford.analysis, magrittr)
+##load prepared data
+rm(list = ls())
+business_info <- get(load("./Dataset/business_info.Rdata"));rm("df_business_info")
+```
+
+###Restuarant research
+
+First we have a look at the data about restuarant information
+```{r}
+restaurant_info <- business_info %>%
+                   filter(str_detect(categories,"Restaurants"))
+str(restaurant_info)
+```
+
+
+##Wanna factorize the categories
+```{r,eval=FALSE}
+# category <- restaurant_info %>%
+#             unnest_tokens(category, categories) %>%
+#             group_by(category)%>%
+#             count(n=n())%>%
+#             select(category,n) %>%
+#             arrange(desc(n))%>%
+#             unique()%>%
+#             filter(! category %in% c("resturant","restaurants","food","services","sports","new","museums","buildings","laundry"))
+
+
+category <- as.matrix(unique(unlist(str_split(restaurant_info$categories, ", "))))
+round <- nrow(category)
+count <- as.matrix(seq(0,0,length.out =  round))
+category <- as.matrix(cbind(category,count))
+colnames(category) <- c("category" ,"count") ;rm("count")
+
+restaurant_temp <- restaurant_info
+#str(category)
+#try to count resturant numbers of each category
+for(i in 1: round){
+  restaurant_temp$temp <- str_detect(restaurant_temp$categories, category[i])
+  category[i,2] <- sum(restaurant_temp$temp)
+}
+rm("restaurant_temp")
+category <- as.data.frame(category)
+#categ <- category
+category$count <- as.numeric(as.numeric_version(category$count))
+category %<>% arrange(desc(count)) %>%
+  filter(!category %in% c("Restaurants","Food","Delis","Diners","Soup","Arts & Entertainment", "Event Planning & Services","Food Delivery Services","Pizza","Sandwiches","Burgers","Cafes","Hot Dogs" , "Chicken Wings","Nightlife","Asian Fusion","Specialty Food","Comfort Food" ,"Buffets","Vegan","Vegetarian","Gluten-Free")) #%>%
+  #str_replace(c("pizza","Sandwiches","Burgers" ),"Fast Food")
+kable(head(category,10),caption = "Retuarant categories by count order")
+
+```
+
+Based on the count of the retuarants' categories, we categorize them into several big types.
+
+Now we have 17 main restuarant categories: "Italian", "French","Vietnamese",  "Chinese", "Mediterranean","Korean", "Greek", "Middle Eastern" ,"Canadian","German","Irish","Indian", "Thai" , "Mexican","Portuguese","Japanese","American". And their counts.
+
+```{r}
+
+type<- c("Japanese", "Sushi Bars",
+         
+         "Fast Food" ,"Pizza","Sandwiches","Burgers","Hot Dogs" , "Chicken Wings",     "American","Caribbean",
+         
+         "Italian",    "French","Vietnamese",  "Chinese", "Mediterranean","Korean", "Greek", "Middle Eastern" ,"Canadian","German","Irish","Indian", "Thai" , "Mexican","Portuguese"
+         )
+
+#type.temp <- category[1:40,] %>%arrange(count) 
+#type <- as.character(type.temp[,1]); rm("type.temp")
+restaurant_temp  <-  restaurant_info %>% select(business_id, categories)
+#restaurant_temp <- as.matrix(restaurant_temp) 
+categ.temp <- seq(0,0, length.out = nrow(restaurant_temp))
+restaurant_temp <- cbind(restaurant_temp , categ.temp);rm(categ.temp)
+
+for (i in 1:length(type)) {
+  
+  for (j in 1:nrow(restaurant_temp)) {
+    
+    if(str_detect(restaurant_temp$categories[j], type[i]) == TRUE){
+    restaurant_temp$categ.temp[j] = type[i]
+    }
+    
+  }
+  
+}
+
+restaurant_temp2 <- restaurant_temp %>%  filter(!categ.temp == 0) 
+
+amer.type <- c("Pizza","Sandwiches","Burgers","Cafes","Hot Dogs" , "Chicken Wings","Fast Food","Caribbean")
+
+for(i in 1:length(amer.type)){
+  restaurant_temp2$categ.temp <-   str_replace(restaurant_temp2$categ.temp, amer.type[i], "American") 
+}
+restaurant_temp2$categ.temp <-   str_replace(restaurant_temp2$categ.temp, "Sushi Bars","Japanese")
+  
+
+restaurant_temp <- restaurant_temp2;rm(restaurant_temp2)
+unique(restaurant_temp$categ.temp)
+length(unique(restaurant_temp$categ.temp))
+
+restaurant_info %<>% inner_join(restaurant_temp %>% select(-categories))
+restaurant_category_count <- restaurant_info %>% group_by(categ.temp) %>% count(n = n()) %>% arrange(desc(n)) %>% select(-nn)
+restaurant_category_count
+#save(restaurant_info, file = "dataset/restaurant_info.Rdata")
+#write.csv(restaurant_category_count, file = "dataset/restaurant_category_count.csv")
+```
+
+## EDA
+
+How's the rating of resturants group by categories?
+```{r,fig.height=3,fig.width=4}
+
+summary(restaurant_info$stars)
+
+ggplot(restaurant_info,aes(x= stars ,y = ..density..))+
+  geom_density(fill="coral", colour=NA, adjust =2.5)
+```
+```{r,fig.height=16,fig.width=16}
+#sapply(x= restaurant_info$stars, INDEX = as.factor(unique(restaurant_info$categ.temp)), FUN =summary())
+restaurant_summary <- 
+restaurant_info %>% group_by(categ.temp)%>% 
+  transmute(mean = round(mean(stars),3),sd = round(sd(stars),3),
+            Q1 =quantile(stars, probs = .25),
+            Q3 =quantile(stars, probs = .75))%>%
+  unique()%>%
+  arrange(desc(mean))
+kable(restaurant_summary,caption = "stars summary by category")
+
+restaurant_info_plot <- restaurant_info %>% 
+  group_by(categ.temp)%>%  mutate(mean = round(mean(stars),3)) %>% ungroup()
+
+ggplot(restaurant_info_plot) +
+  aes(x= stars ,y = ..density.., group = categ.temp )+
+  #geom_histogram(fill = "cornsilk", "color" = "grey60",size =.2) +
+  aes(x=stars, fill = categ.temp,color = categ.temp)+geom_density(alpha =1, adjust =2)+
+  #facet_grid( categ.temp~ ., scales="free_y", space="free_y" ) +
+  # geom_vline(xintercept = mean)+
+  facet_wrap(~categ.temp)+
+  theme(legend.position = "none")
+  
+```
+

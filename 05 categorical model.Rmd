@@ -1,0 +1,200 @@
+---
+title: "05 categorical"
+author: "Xiang XU"
+date: "December 2, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+pacman::p_load(knitr,ggplot2,  dplyr, ggraph, stringr, wordcloud, tidytext,tidyr,lubridate, widyr,jsonlite,sentimentr, benford.analysis, magrittr,lme4,arm,nnet,mgcv,data.table)
+
+```
+```{r}
+#read data
+rm(list=ls())
+restaurant_info <- get(load(( "dataset/restaurant_info.Rdata")))
+#restaurant_category_count <- read.csv(file = "dataset/restaurant_category_count.csv")
+
+str(restaurant_info)
+colnames(restaurant_info)
+restaurant_info$categ.temp <- as.factor(restaurant_info$categ.temp)
+restaurant_info$stars_int <- round(restaurant_info$stars-.1,0)
+restaurant_info$Parking <- ifelse(str_detect(as.character(restaurant_info$BusinessParking),"True") == TRUE,TRUE, FALSE)
+```
+
+
+
+```{r}
+#summary(restaurant_info$review_count)
+ggplot(restaurant_info, aes(x= review_count, y = ..density..))+geom_density()
+restaurant_info$review_cat <- cut(restaurant_info$review_count, c(0,7,20,60,200,500, 1000,5000,10000),labels = c(1:8))
+#unique(restaurant_info$review_cat)
+```
+
+
+####polr function
+```{r}
+#fit an ordered multinomial logit model.
+fit.polr <- polr(ordered(stars_int) ~  review_cat + categ.temp + RestaurantsPriceRange2 + NoiseLevel  , data = restaurant_info)
+display(fit.polr)
+
+##make prediction
+predx <- na.omit(expand.grid(review_cat =unique(restaurant_info$review_cat),
+                     categ.temp =unique(restaurant_info$categ.temp),
+                     RestaurantsPriceRange2 = unique(restaurant_info$RestaurantsPriceRange2) , 
+                     NoiseLevel = unique(restaurant_info$NoiseLevel)))
+
+predy <- predict(fit.polr, newdata = predx, type = "prob")
+```
+
+
+#####predictor : "review_cat","categ.temp","RestaurantsPriceRange2","NoiseLevel"
+```{r}
+#resd <- data.frame(predx,stars = predy)
+resd <- data.frame(predx[,c("review_cat","categ.temp","RestaurantsPriceRange2")],stars_int = predy)
+
+#temp <- melt(resd, id.vars = c("categ.temp","RestaurantsPriceRange2","NoiseLevel","review_cat")) 
+
+
+temp <- melt(resd, id.vars = c("categ.temp","RestaurantsPriceRange2","review_cat"))
+
+ggplot( temp )+
+  #geom_bar(  stat = "identity") +
+  geom_bar(position = "fill", stat = "identity") +
+  aes(x= review_cat, y =value, fill = variable) +
+  facet_wrap(~ categ.temp) +
+  #ylim(c(3,5))+
+  #geom_hline() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))+
+  ylab("prob of stars level") + xlab("review count level")
+```
+
+The above result is a point estimate and lacks information regarding the uncertainty of our estimates. We can add the uncertainty in the parameter estimate using the sim function.
+```{r,fig.width=12,fig.height=9}
+simfit<-sim(fit.polr)
+
+xx <- model.matrix(~ -1 + categ.temp + review_cat +  RestaurantsPriceRange2 + NoiseLevel ,data =predx)
+xb <- xx[,colnames(simfit@coef)]%*% t(simfit@coef)
+
+reslist<-vector("list",100)
+for(iter in 1:100){ 
+  pa<-invlogit(outer(-xb[,iter],simfit@zeta[iter,],"+")) 
+  pp<-cbind( pa[,1], pa[,2]-pa[,1],pa[,3]-pa[,2],pa[,4]-pa[,3],1-pa[,4]) 
+  resd<-data.frame(predx[,c("review_cat","categ.temp","RestaurantsPriceRange2")],iter=iter,stars_int=pp) 
+  reslist[[iter]]<-resd
+}
+
+temp <- melt(rbindlist(reslist),
+            id.var=c("review_cat","categ.temp","RestaurantsPriceRange2","iter"))
+ggplot(temp)+
+  geom_point(alpha=0.2)+ 
+  aes(x=categ.temp,y=value,group=iter,color=variable)+ 
+  facet_grid(variable~RestaurantsPriceRange2)+ 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  stat_summary(fun.y=mean, geom="line", aes(group=1, color ="royalblue4"))+
+  stat_summary(fun.y=function(x)quantile(x,0.1), geom="line", lty=3, aes(group = 1, color ="gery0"))+
+  stat_summary(fun.y=function(x)quantile(x,0.9), geom="line", lty=3, aes(group = 1, color ="grey0"))
+```
+
+#####binned plot
+```{r}
+
+obsmat <-model.matrix(~-1+as.factor(stars_int) , data= restaurant_info)
+fitted <- fitted(fit.polr)
+resdimat<-obsmat[1:nrow(fitted),]-fitted
+
+par(mfrow=c(3,2))
+binnedplot(fitted(fit.polr)[,1],resdimat[,1])
+binnedplot(fitted(fit.polr)[,2],resdimat[,2])
+binnedplot(fitted(fit.polr)[,3],resdimat[,3])
+binnedplot(fitted(fit.polr)[,4],resdimat[,4])
+binnedplot(fitted(fit.polr)[,5],resdimat[,5])
+
+```
+
+
+####polr function
+#####consider more predictor: Parking(car), Delvery, Takout etc
+```{r}
+#fit an ordered multinomial logit model.
+fit.polr2 <- polr(ordered(stars_int) ~  review_cat + categ.temp + RestaurantsPriceRange2 + NoiseLevel +Parking +RestaurantsTakeOut + RestaurantsDelivery , data = restaurant_info)
+display(fit.polr2)
+
+##make prediction
+predx2 <- na.omit(expand.grid(review_cat =unique(restaurant_info$review_cat),
+                     categ.temp =unique(restaurant_info$categ.temp),
+                     RestaurantsPriceRange2 = unique(restaurant_info$RestaurantsPriceRange2) , 
+                     NoiseLevel = unique(restaurant_info$NoiseLevel),
+                     Parking = c(TRUE ,FALSE),
+                     RestaurantsTakeOut = c(TRUE ,FALSE),
+                     RestaurantsDelivery = c(TRUE ,FALSE)))
+
+predy2 <- predict(fit.polr2, newdata = predx2, type = "prob")
+```
+
+#####!!!!!!!!!need adjusted!
+
+```{r}
+#resd <- data.frame(predx,stars = predy)
+resd <- data.frame(predx[,c("review_cat","categ.temp","RestaurantsPriceRange2")],stars_int = predy)
+
+#temp <- melt(resd, id.vars = c("categ.temp","RestaurantsPriceRange2","NoiseLevel","review_cat")) 
+
+
+temp <- melt(resd, id.vars = c("categ.temp","RestaurantsPriceRange2","review_cat"))
+
+ggplot( temp )+
+  #geom_bar(  stat = "identity") +
+  geom_bar(position = "fill", stat = "identity") +
+  aes(x= review_cat, y =value, fill = variable) +
+  facet_wrap(~ categ.temp) +
+  #ylim(c(3,5))+
+  #geom_hline() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))+
+  ylab("prob of stars level") + xlab("review count level")
+```
+
+The above result is a point estimate and lacks information regarding the uncertainty of our estimates. We can add the uncertainty in the parameter estimate using the sim function.
+```{r,fig.width=12,fig.height=9}
+simfit<-sim(fit.polr)
+
+xx <- model.matrix(~ -1 + categ.temp + review_cat +  RestaurantsPriceRange2 + NoiseLevel ,data =predx)
+xb <- xx[,colnames(simfit@coef)]%*% t(simfit@coef)
+
+reslist<-vector("list",100)
+for(iter in 1:100){ 
+  pa<-invlogit(outer(-xb[,iter],simfit@zeta[iter,],"+")) 
+  pp<-cbind( pa[,1], pa[,2]-pa[,1],pa[,3]-pa[,2],pa[,4]-pa[,3],1-pa[,4]) 
+  resd<-data.frame(predx[,c("review_cat","categ.temp","RestaurantsPriceRange2")],iter=iter,stars_int=pp) 
+  reslist[[iter]]<-resd
+}
+
+temp <- melt(rbindlist(reslist),
+            id.var=c("review_cat","categ.temp","RestaurantsPriceRange2","iter"))
+ggplot(temp)+
+  geom_point(alpha=0.2)+ 
+  aes(x=categ.temp,y=value,group=iter,color=variable)+ 
+  facet_grid(variable~RestaurantsPriceRange2)+ 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+  stat_summary(fun.y=mean, geom="line", aes(group=1, color ="royalblue4"))+
+  stat_summary(fun.y=function(x)quantile(x,0.1), geom="line", lty=3, aes(group = 1, color ="gery0"))+
+  stat_summary(fun.y=function(x)quantile(x,0.9), geom="line", lty=3, aes(group = 1, color ="grey0"))
+```
+
+#####binned plot
+```{r}
+
+obsmat <-model.matrix(~-1+as.factor(stars_int) , data= restaurant_info)
+fitted <- fitted(fit.polr)
+resdimat<-obsmat[1:nrow(fitted),]-fitted
+
+par(mfrow=c(3,2))
+binnedplot(fitted(fit.polr)[,1],resdimat[,1])
+binnedplot(fitted(fit.polr)[,2],resdimat[,2])
+binnedplot(fitted(fit.polr)[,3],resdimat[,3])
+binnedplot(fitted(fit.polr)[,4],resdimat[,4])
+binnedplot(fitted(fit.polr)[,5],resdimat[,5])
+
+```
+

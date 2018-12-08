@@ -1,0 +1,207 @@
+---
+title: "EDA"
+author: "Xiang XU"
+date: "December 2, 2018"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(knitr,ggplot2, tidyverse, dplyr, ggraph, stringr, wordcloud, tidytext,tidyr,lubridate, widyr,jsonlite,sentimentr, benford.analysis, magrittr)
+
+```
+
+```{r}
+##load prepared data
+rm(list = ls())
+user_info <- get(load("./Dataset/business_info.Rdata"));rm("df_business_info")
+```
+
+
+###Restaurant category EDA
+
+Based on the count of the retuarants' categories, we categorize them into several big types.
+
+Now we have 17 main restuarant categories: "Italian", "French","Vietnamese",  "Chinese", "Mediterranean","Korean", "Greek", "Middle Eastern" ,"Canadian","German","Irish","Indian", "Thai" , "Mexican","Portuguese","Japanese","American". And their counts.
+
+```{r}
+#read data
+restaurant_info <- get(load(( "dataset/restaurant_info.Rdata")))
+restaurant_category_count <- read.csv(file = "dataset/restaurant_category_count.csv")
+```
+
+How's the rating of resturants group by categories?
+```{r,fig.height=3,fig.width=4}
+
+summary(restaurant_info$stars)
+
+ggplot(restaurant_info,aes(x= stars ,y = ..density..))+
+  geom_density(fill="coral", colour=NA, adjust =2.5)
+```
+```{r,fig.height=16,fig.width=16}
+#sapply(x= restaurant_info$stars, INDEX = as.factor(unique(restaurant_info$categ.temp)), FUN =summary())
+restaurant_summary <- 
+restaurant_info %>% group_by(categ.temp)%>% 
+  transmute(mean = round(mean(stars),3),sd = round(sd(stars),3),
+            Q1 =quantile(stars, probs = .25),
+            Q3 =quantile(stars, probs = .75))%>%
+  unique()%>%
+  arrange(desc(mean))
+kable(restaurant_summary,caption = "stars summary by category")
+
+# restaurant_info <- restaurant_info %>% 
+#   group_by(categ.temp)%>%  mutate(mean = round(mean(stars),3)) %>% ungroup()
+
+ggplot(restaurant_info) +
+  aes(x= stars ,y = ..density.., group = categ.temp )+
+  #geom_histogram(fill = "cornsilk", "color" = "grey60",size =.2) +
+  aes(x=stars, fill = categ.temp,color = categ.temp)+geom_density(alpha =1, adjust =2)+
+  #facet_grid( categ.temp~ ., scales="free_y", space="free_y" ) +
+  # geom_vline(xintercept = mean)+
+  facet_wrap(~categ.temp)+
+  theme(legend.position = "none")
+  
+```
+
+
+```{r}
+ggplot(restaurant_info,aes(x= factor(categ.temp) ,y = stars, color = categ.temp )) +
+  #+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1),legend.position = "none")
+
+
+
+ggplot(restaurant_info,aes(x= factor(categ.temp) ,y = review_count, color = categ.temp )) +
+  #+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1),legend.position = "none")
+```
+
+too many outliers inreview count
+
+replace outliers by using "outlier rule" q +/- (1.5 * H),
+
+```{r}
+change_outliers <- function(x, na.rm = TRUE, ...) {
+  qnt <- quantile(x, probs=c(.25, .75), na.rm = na.rm, ...)
+  H <- 1.5 * IQR(x, na.rm = na.rm)
+  y <- x
+  y[x < (qnt[1] - H)] <- qnt[1] - H
+  y[x > (qnt[2] + H)] <- qnt[2] + H
+  y
+}
+
+
+restaurant_info$review_count_rmout <- change_outliers(restaurant_info$review_count)
+  
+ggplot(restaurant_info,aes(x= factor(categ.temp) ,y = review_count_rmout, color = categ.temp )) +
+  #+
+  geom_boxplot()+
+  theme(axis.text.x = element_text(angle=45, hjust=1, vjust=1),legend.position = "none")
+```
+
+###RestaurantsPriceRange2
+
+```{r}
+summary(restaurant_info$RestaurantsPriceRange2)
+
+ggplot(restaurant_info,aes(x=RestaurantsPriceRange2 ))+
+  geom_histogram(fill="coral", colour=NA,stat = "count")
+
+ggplot(restaurant_info,aes(x=RestaurantsPriceRange2, fill=categ.temp, colour=categ.temp))+
+  geom_histogram(stat = "count") +
+  facet_wrap( ~ categ.temp) +
+  theme(legend.position = "none")
+
+```
+
+####relation between RestaurantsPriceRange2 & stars
+
+```{r}
+ggplot(restaurant_info,aes(x=RestaurantsPriceRange2, y= stars,color="lightskynlue"))+
+  geom_point(position=position_jitter(width=.3, height=0.2))+
+  #facet_wrap(~categ.temp)+
+  theme(legend.position = "none")
+
+ggplot(restaurant_info,aes(x=RestaurantsPriceRange2, y= stars, color=categ.temp))+
+  geom_point(position=position_jitter(width=.3, height=0.2))+
+  facet_wrap(~categ.temp)+
+  theme(legend.position = "none")
+```
+
+#Combine data together, explore sentiment score affect
+```{r}
+rm(list=ls())
+restaurant_info <- get(load(( "data/restaurant_info.Rdata")))
+review_sentiment_restaurant <- get( load("E:/MSSP/MA678/Midproj_Yelp/Data/review_sentiment_restaurant.Rdata"))
+```
+```{r}
+restaurant_info$categ.temp <- as.factor(restaurant_info$categ.temp)
+
+restaurant_info$Parking <- ifelse(str_detect(as.character(restaurant_info$BusinessParking),"True") == TRUE,TRUE, FALSE)
+
+
+#cut restaurants' stars into 2 level
+restaurant_info$stars_bio <- cut(restaurant_info$stars,c(0,3.1,5),labels = c("Below Average","Above Average"))
+
+#restaurant_info$review_cat <- cut(restaurant_info$review_count, c(0,7,20,60,200,500, 1000,5000,10000),labels = c(1:8))
+
+#look at how many NA does colmun have
+na_count <-data.frame(sapply(restaurant_info, function(y) sum(length(which(is.na(y))))))
+
+
+restaurant_info_nona <- na.omit(restaurant_info %>%
+                                  dplyr::select(business_id , stars_bio,review_count , categ.temp , Parking, RestaurantsPriceRange2, NoiseLevel, RestaurantsTakeOut, RestaurantsDelivery ))
+
+review_sentiment_restaurant %<>% dplyr::select(business_id, stars.x, review_sentiment)
+
+restaurant_allinfo <- restaurant_info_nona %>% inner_join(review_sentiment_restaurant, by ="business_id")
+colnames(restaurant_allinfo)
+
+```
+
+##multinomial
+
+```{r, fig.width=6, fig.height=6}
+#fit an ordered multinomial logit model.
+fit.polr2 <- polr(ordered(stars_int) ~  review_count + categ.temp + RestaurantsPriceRange2 + NoiseLevel +Parking +RestaurantsTakeOut + RestaurantsDelivery + review_sentiment +stars.x, data = restaurant_allinfo )
+display(fit.polr2)
+
+# ##make prediction
+# predx2 <- na.omit(expand.grid(review_cat =unique(restaurant_info$review_cat),
+#                      categ.temp =unique(restaurant_info$categ.temp),
+#                      RestaurantsPriceRange2 = unique(restaurant_info$RestaurantsPriceRange2) ,
+#                      NoiseLevel = unique(restaurant_info$NoiseLevel),
+#                      Parking = c(TRUE ,FALSE),
+#                      RestaurantsTakeOut = c(TRUE ,FALSE),
+#                      RestaurantsDelivery = c(TRUE ,FALSE)))
+# 
+# predy2 <- predict(fit.polr2, newdata = predx2, type = "prob")
+
+obsmat2 <-model.matrix(~-1+as.factor(stars_int) , data= restaurant_info)
+fitted2 <- fitted(fit.polr2)
+resdimat2<-obsmat2[1:nrow(fitted2),]-fitted2
+
+par(mfrow=c(3,2))
+binnedplot(fitted2[,1],resdimat2[,1])
+binnedplot(fitted2[,2],resdimat2[,2])
+binnedplot(fitted2[,3],resdimat2[,3])
+binnedplot(fitted2[,4],resdimat2[,4])
+binnedplot(fitted2[,5],resdimat2[,5])
+```
+
+
+
+##logistic
+```{r}
+fit.logistic <- glm(stars_bio ~  review_count + categ.temp + RestaurantsPriceRange2 + NoiseLevel +Parking +RestaurantsTakeOut + RestaurantsDelivery + review_sentiment +stars.x , data = restaurant_allinfo,family = binomial(link = "logit"))
+display(fit.logistic)
+
+#look at the model fit
+marginalModelPlots(fit.logistic)
+
+binnedplot(fitted(fit.logistic),residuals(fit.logistic, type = "response"))
+
+```
+
